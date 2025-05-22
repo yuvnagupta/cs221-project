@@ -63,18 +63,34 @@ def format_prompt(item):
     context = "\n".join(item["pre_text"] + item["post_text"])
     table_info = format_table(item["table"])
     question = item["qa"]["question"]
-    
-    return f"""Given the following financial text, table, and question, provide a step-by-step solution to find the answer.
 
-Text:
-{context}
+    return f"""You are a financial analysis assistant. Your task is to analyze the given financial text and table to answer the question.
 
-Table:
-{table_info}
+            IMPORTANT INSTRUCTIONS:
+            1. Carefully examine the text and table
+            2. Perform any necessary calculations to find the answer
+            3. Clearly show your reasoning step by step
+            4. Always include the final answer in this exact format:
+            [FINAL_ANSWER]your_numeric_answer[/FINAL_ANSWER]
 
-Question: {question}
+            Examples:
+            [FINAL_ANSWER]25.5[/FINAL_ANSWER]
+            [FINAL_ANSWER]1234.56[/FINAL_ANSWER]
+            [FINAL_ANSWER]0.75[/FINAL_ANSWER]
 
-Let's solve this step by step:"""
+            Do NOT include:
+            - Any units, symbols, or extra text after the final answer
+            - Any follow-up explanations after the final answer tag
+
+            Text:
+            {context}
+
+            Table:
+            {table_info}
+
+            Question: {question}
+
+            Let's solve this step by step:"""
 
 def generate_answer(prompt: str, max_retries: int = 3) -> str:
     """Generate answer using GPT-3.5."""
