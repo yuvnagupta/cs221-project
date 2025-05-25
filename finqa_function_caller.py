@@ -15,7 +15,8 @@ class FunctionCaller:
             "average": self._average,
             "sum": self._sum,
             "difference": self._difference,
-            "ratio": self._ratio
+            "ratio": self._ratio,
+            "final_answer": lambda x: x  # Now FINAL_ANSWER is recognized
         }
         
         # Regular expressions for detecting function calls
@@ -26,7 +27,8 @@ class FunctionCaller:
             "average": r"\[AVERAGE\](.*?)\[/AVERAGE\]",
             "sum": r"\[SUM\](.*?)\[/SUM\]",
             "difference": r"\[DIFFERENCE\](.*?)\[/DIFFERENCE\]",
-            "ratio": r"\[RATIO\](.*?)\[/RATIO\]"
+            "ratio": r"\[RATIO\](.*?)\[/RATIO\]",
+            "final_answer": r"\[FINAL_ANSWER\](.*?)\[/FINAL_ANSWER\]"
         }
 
     def _calculator(self, expression: str) -> float:
@@ -86,6 +88,8 @@ class FunctionCaller:
                 part, total = values.split(" of ")
             elif "/" in values:
                 part, total = values.split("/")
+            elif "|" in values:
+                part, total = values.split("|")
             else:
                 raise ValueError("Invalid percentage format")
             
@@ -145,64 +149,80 @@ class FunctionCaller:
         except Exception as e:
             raise ValueError(f"Error calculating ratio: {str(e)}")
 
-    def parse_function_calls(self, text: str) -> List[Tuple[str, str, Any]]:
-        """Parse function calls from text and return list of (function_name, arguments, result)."""
-        results = []
+    def process_answer(self, answer: str) -> Tuple[str, List[Tuple[str, str, Any]]]:
+        """Process an answer containing function calls and return the final answer with results."""
+        # Extract all function calls
+        pattern = r"\[(\w+)\](.*?)\[/\1\]"
+        matches = re.finditer(pattern, answer, re.DOTALL)
         
-        for func_name, pattern in self.function_patterns.items():
-            matches = re.finditer(pattern, text, re.DOTALL)
-            for match in matches:
-                args = match.group(1).strip()
+        results = []
+        final_value = None
+        
+        # Process each function call in sequence
+        for match in matches:
+            func_name = match.group(1).lower()
+            args = match.group(2)
+            
+            if func_name in self.functions:
                 try:
                     result = self.functions[func_name](args)
                     results.append((func_name, args, result))
+                    final_value = result  # Keep track of the last result
                 except Exception as e:
-                    print(f"Error executing {func_name} with args '{args}': {str(e)}")
+                    print(f"Error in {func_name} with args '{args}': {str(e)}")
+                    results.append((func_name, args, f"ERROR: {str(e)}"))
         
-        return results
+        # If we have a final value, wrap it in FINAL_ANSWER tags
+        if final_value is not None:
+            return f"[FINAL_ANSWER]{final_value}[/FINAL_ANSWER]", results
+        return answer, results
 
     def format_function_call(self, func_name: str, args: str) -> str:
         """Format a function call in the expected format."""
         return f"[{func_name.upper()}]{args}[/{func_name.upper()}]"
 
-    def process_answer(self, answer: str) -> Tuple[str, List[Any]]:
-        """Process an answer containing function calls and return the final answer with results."""
-        # Parse all function calls
-        function_results = self.parse_function_calls(answer)
-        
-        # Replace function calls with their results
-        processed_answer = answer
-        for func_name, args, result in function_results:
-            call = self.format_function_call(func_name, args)
-            processed_answer = processed_answer.replace(call, str(result))
-        
-        return processed_answer, function_results
-
 def format_prompt_with_functions() -> str:
     """Return the prompt template that includes function calling instructions."""
-    return """Given the following financial text, table, and question, provide a step-by-step solution to find the answer.
-You can use the following functions to help with calculations:
+    return """You are a financial analysis assistant. Your task is to analyze the given financial text and table to answer the question.
 
+IMPORTANT INSTRUCTIONS:
+1. First, carefully analyze the table structure and data types provided
+2. Use the appropriate functions for calculations
+3. Show your work step by step
+4. Always include the final answer in the exact format specified
+
+AVAILABLE FUNCTIONS:
 1. Calculator: [CALCULATOR]expression[/CALCULATOR]
    Example: [CALCULATOR]100 * 1.1[/CALCULATOR]
+   Note: Only use basic arithmetic operations (+, -, *, /)
 
 2. Calendar: [CALENDAR]date[/CALENDAR]
    Example: [CALENDAR]2024-03-15[/CALENDAR]
+   Note: Use YYYY-MM-DD format
 
-3. Percentage: [PERCENTAGE]part of total[/PERCENTAGE]
-   Example: [PERCENTAGE]25 of 100[/PERCENTAGE]
+3. Percentage: [PERCENTAGE]part of total[/PERCENTAGE] or [PERCENTAGE]part|total[/PERCENTAGE]
+   Example: [PERCENTAGE]25 of 100[/PERCENTAGE] or [PERCENTAGE]25|100[/PERCENTAGE]
+   Note: Returns percentage value (e.g., 25.0 for 25%)
 
-4. Average: [AVERAGE]number1, number2, ...[/AVERAGE]
+4. Percentage Change: [PERCENTAGE_CHANGE]old_value|new_value[/PERCENTAGE_CHANGE]
+   Example: [PERCENTAGE_CHANGE]100|120[/PERCENTAGE_CHANGE]
+   Note: Returns percentage change (e.g., 20.0 for 20% increase)
+
+5. Average: [AVERAGE]number1, number2, ...[/AVERAGE]
    Example: [AVERAGE]10, 20, 30[/AVERAGE]
+   Note: Returns arithmetic mean
 
-5. Sum: [SUM]number1, number2, ...[/SUM]
+6. Sum: [SUM]number1, number2, ...[/SUM]
    Example: [SUM]10, 20, 30[/SUM]
+   Note: Returns total of all numbers
 
-6. Difference: [DIFFERENCE]number1, number2[/DIFFERENCE]
-   Example: [DIFFERENCE]100, 50[/DIFFERENCE]
+7. Difference: [DIFFERENCE]value1|value2[/DIFFERENCE]
+   Example: [DIFFERENCE]100|50[/DIFFERENCE]
+   Note: Returns absolute difference
 
-7. Ratio: [RATIO]number1, number2[/RATIO]
+8. Ratio: [RATIO]number1, number2[/RATIO]
    Example: [RATIO]100, 50[/RATIO]
+   Note: Returns first number divided by second
 
 Text:
 {context}
@@ -212,32 +232,86 @@ Table:
 
 Question: {question}
 
-Let's solve this step by step:"""
+REQUIRED ANSWER FORMAT:
+1. First, explain what data you need from the table
+2. Then, show your calculations using the functions above
+3. Finally, provide your answer in this exact format:
+[FINAL_ANSWER]your_numeric_answer[/FINAL_ANSWER]
+
+Examples of final answers:
+- For percentages: [FINAL_ANSWER]25.5[/FINAL_ANSWER]
+- For currency: [FINAL_ANSWER]1234.56[/FINAL_ANSWER]
+- For ratios: [FINAL_ANSWER]0.75[/FINAL_ANSWER]
+
+IMPORTANT:
+- Do not include any units or symbols in the final answer
+- Round to 2 decimal places unless specified otherwise
+- If the answer cannot be calculated, use [FINAL_ANSWER]N/A[/FINAL_ANSWER]
+- Do not include any text after the final answer tag
+- Do not include follow-up exercises or additional questions
+- Use the function tags exactly as shown in the examples
+- Show your work using the function tags, not in natural language"""
 
 def main():
     # Example usage
     caller = FunctionCaller()
     
-    # Example answer with function calls
-    answer = """
-    First, let's calculate the total revenue:
+    # Test case 1: Sequential function calls
+    test1 = """
+    Step 1: Calculate the new value
+    [CALCULATOR]1000+200[/CALCULATOR]
+    
+    Step 2: Calculate percentage change
+    [PERCENTAGE_CHANGE]1000|1200[/PERCENTAGE_CHANGE]
+    
+    Step 3: Final answer
+    [FINAL_ANSWER]20.0[/FINAL_ANSWER]
+    """
+    print("\nTest 1 - Sequential function calls:")
+    print("Input:", test1)
+    result1, steps1 = caller.process_answer(test1)
+    print("Output:", result1)
+    print("Steps:", steps1)
+    
+    # Test case 2: Multiple calculations
+    test2 = """
+    Step 1: Calculate sum
+    [SUM]100,200[/SUM]
+    
+    Step 2: Calculate total
+    [CALCULATOR]500+100[/CALCULATOR]
+    
+    Step 3: Calculate percentage
+    [PERCENTAGE]300|600[/PERCENTAGE]
+    
+    Step 4: Final answer
+    [FINAL_ANSWER]50.0[/FINAL_ANSWER]
+    """
+    print("\nTest 2 - Multiple calculations:")
+    print("Input:", test2)
+    result2, steps2 = caller.process_answer(test2)
+    print("Output:", result2)
+    print("Steps:", steps2)
+    
+    # Test case 3: Complex calculation with multiple steps
+    test3 = """
+    Step 1: Calculate total revenue
     [SUM]1000000, 2000000, 3000000[/SUM]
     
-    Then, let's find the percentage increase:
-    [PERCENTAGE]500000 of 6000000[/PERCENTAGE]
+    Step 2: Calculate new value
+    [CALCULATOR]1000000+2000000[/CALCULATOR]
     
-    Finally, let's calculate the average:
-    [AVERAGE]1000000, 2000000, 3000000[/AVERAGE]
+    Step 3: Calculate percentage change
+    [PERCENTAGE_CHANGE]1000000|3000000[/PERCENTAGE_CHANGE]
+    
+    Step 4: Final answer
+    [FINAL_ANSWER]200.0[/FINAL_ANSWER]
     """
-    
-    # Process the answer
-    final_answer, results = caller.process_answer(answer)
-    
-    print("Original answer:", answer)
-    print("\nFunction results:")
-    for func_name, args, result in results:
-        print(f"{func_name}({args}) = {result}")
-    print("\nFinal answer:", final_answer)
+    print("\nTest 3 - Complex calculation:")
+    print("Input:", test3)
+    result3, steps3 = caller.process_answer(test3)
+    print("Output:", result3)
+    print("Steps:", steps3)
 
 if __name__ == "__main__":
     main() 

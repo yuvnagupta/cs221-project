@@ -8,6 +8,7 @@ import time
 import subprocess
 from huggingface_hub import snapshot_download
 from finqa_function_caller import FunctionCaller, format_prompt_with_functions
+import pandas as pd
 
 def download_finqa_dataset():
     """Download FinQA dataset if not present."""
@@ -45,9 +46,9 @@ def download_model_with_retry(model_name, max_retries=3, retry_delay=10):
                 raise Exception(f"Failed to download model after {max_retries} attempts")
 
 def load_model_and_tokenizer():
-    """Load Phi-2 model and tokenizer."""
-    print("Loading Phi-2 model and tokenizer...")
-    model_name = "microsoft/phi-2"
+    """Load Mistral 7B model and tokenizer."""
+    print("Loading Mistral 7B model and tokenizer...")
+    model_name = "mistralai/Mistral-7B-v0.1"
     
     os.makedirs("./models", exist_ok=True)
     download_model_with_retry(model_name)
@@ -58,9 +59,10 @@ def load_model_and_tokenizer():
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        device_map="auto"  # This helps with memory management
     )
+    
     print("Model and tokenizer loaded successfully")
     return model, tokenizer
 
@@ -76,13 +78,57 @@ def load_finqa_data(split="test"):
     return data
 
 def format_table(table):
-    """Format table for display."""
-    col_widths = [max(len(str(row[i])) for row in table) for i in range(len(table[0]))]
+    """Format table for display with clear structure and alignment for LLM processing using pandas."""
+    if not table or not table[0]:
+        return ""
+    
+    # Convert table to pandas DataFrame
+    df = pd.DataFrame(table[1:], columns=table[0])
+    
+    # Format the output
     formatted_rows = []
-    for row in table:
-        formatted_row = " | ".join(str(cell).ljust(width) for cell, width in zip(row, col_widths))
-        formatted_rows.append(formatted_row)
-    formatted_rows.insert(1, "-" * len(formatted_rows[0]))
+    
+    # Add table description
+    formatted_rows.append("Table Structure:")
+    formatted_rows.append(f"Number of columns: {len(df.columns)}")
+    formatted_rows.append(f"Number of rows: {len(df)}")
+    formatted_rows.append("")
+    
+    # Add column information
+    formatted_rows.append("Column Information:")
+    for col in df.columns:
+        # Get sample values and determine data type
+        sample_values = df[col].dropna().head(3).tolist()
+        if all(str(v).replace('.', '').replace('-', '').replace('$', '').replace(',', '').isdigit() for v in sample_values):
+            dtype = "Numeric"
+            # Add summary statistics for numeric columns
+            stats = df[col].astype(float).describe()
+            formatted_rows.append(f"- {col}:")
+            formatted_rows.append(f"  Type: {dtype}")
+            formatted_rows.append(f"  Min: {stats['min']:.2f}")
+            formatted_rows.append(f"  Max: {stats['max']:.2f}")
+            formatted_rows.append(f"  Mean: {stats['mean']:.2f}")
+        else:
+            dtype = "Text"
+            formatted_rows.append(f"- {col}:")
+            formatted_rows.append(f"  Type: {dtype}")
+            formatted_rows.append(f"  Sample values: {', '.join(str(v) for v in sample_values)}")
+    
+    # Add formatted table
+    formatted_rows.append("\nFormatted Table:")
+    formatted_rows.append(df.to_string(index=False))
+    
+    # Add value extraction hints
+    formatted_rows.append("\nValue Extraction Hints:")
+    for idx, row in df.iterrows():
+        formatted_rows.append(f"Row {idx+1}: {row.to_dict()}")
+    
+    # Add summary statistics for numeric columns
+    numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+    if len(numeric_cols) > 0:
+        formatted_rows.append("\nNumeric Column Statistics:")
+        formatted_rows.append(df[numeric_cols].describe().to_string())
+    
     return "\n".join(formatted_rows)
 
 def format_prompt(item):
@@ -98,7 +144,7 @@ def format_prompt(item):
     )
 
 def generate_answer(model, tokenizer, prompt, max_new_tokens=512):
-    """Generate answer using Phi-2."""
+    """Generate answer using Mistral 7B."""
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(model.device)
     
     outputs = model.generate(
@@ -107,6 +153,8 @@ def generate_answer(model, tokenizer, prompt, max_new_tokens=512):
         num_return_sequences=1,
         temperature=0.7,
         do_sample=True,
+        top_p=0.95,  # Added for better generation
+        repetition_penalty=1.1,  # Added to reduce repetition
         pad_token_id=tokenizer.eos_token_id
     )
     
@@ -170,50 +218,37 @@ def main():
         # Initialize function caller
         function_caller = FunctionCaller()
         
-        # Load model and tokenizer
-        model, tokenizer = load_model_and_tokenizer()
+        # Simulate an LLM response that should trigger function calling
+        simulated_response = """
+        To calculate the percentage increase in revenue from Q1 to Q2 2024, we need to:
+        1. Find the revenue values from the table
+        2. Calculate the percentage change
         
-        # Load test data
-        test_data = load_finqa_data(split="test")
+        From the table:
+        Q1 2024 Revenue: $1000000
+        Q2 2024 Revenue: $1200000
         
-        # Run inference
-        print("Running inference...")
-        predictions = []
+        Let's calculate the percentage increase:
+        [PERCENTAGE]1000000 of 1200000[/PERCENTAGE]
         
-        for item in tqdm(test_data):
-            # Format prompt with function calling instructions
-            prompt = format_prompt(item)
+        Therefore, the revenue increased by 20% from Q1 to Q2 2024.
+        """
+        
+        print("\nSimulated LLM Response:")
+        print(simulated_response)
             
-            # Generate answer
-            answer = generate_answer(model, tokenizer, prompt)
-            
-            # Process answer with function caller
-            final_answer, function_results = process_answer_with_functions(answer, function_caller)
-            
-            predictions.append({
-                "id": item["id"],
-                "raw_answer": answer,
-                "final_answer": final_answer,
-                "function_results": [
-                    {
-                        "function": func_name,
-                        "args": args,
-                        "result": str(result)
-                    }
-                    for func_name, args, result in function_results
-                ]
-            })
+        # Process answer with function caller
+        print("\nProcessing answer with function caller...")
+        final_answer, function_results = process_answer_with_functions(simulated_response, function_caller)
         
-        # Save predictions
-        pred_file = "outputs/finqa_function_predictions.json"
-        save_predictions(predictions, pred_file)
-        
-        # Run evaluation using the official FinQA evaluation script
-        gold_file = "data/finqa/test.json"
-        run_evaluation(pred_file, gold_file)
-        
-        print("Inference completed successfully!")
-        print(f"Results saved to {pred_file}")
+        print("\nFinal Answer:")
+        print(final_answer)
+        print("\nFunction Results:")
+        for func_name, args, result in function_results:
+            print(f"Function: {func_name}")
+            print(f"Arguments: {args}")
+            print(f"Result: {result}")
+            print("---")
         
     except Exception as e:
         print(f"An error occurred: {str(e)}")
